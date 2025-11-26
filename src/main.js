@@ -1,31 +1,32 @@
+import { Actor } from 'apify'; 
 import { PlaywrightCrawler, Dataset } from 'crawlee';
 
-// URLs iniciais (você pode passar isso via Input do Apify depois, mas deixei fixo para o teste)
+// Inicializa o Actor (essencial para rodar na plataforma)
+await Actor.init();
+
 const startUrls = [
     'https://www.olx.pt/carros-motos-e-barcos/carros/aveiro/?search%5Bprivate_business%5D=private&search%5Bfilter_float_year%3Afrom%5D=2019&search%5Bfilter_float_quilometros%3Ato%5D=120000'
 ];
 
+// Configuração de Proxy
+// Se der erro de proxy depois, troque groups: ['RESIDENTIAL'] por groups: ['AUTO'] ou remova o objeto de dentro dos parênteses.
+const proxyConfiguration = await Actor.createProxyConfiguration({ 
+    groups: ['RESIDENTIAL'] 
+});
+
 const crawler = new PlaywrightCrawler({
-    // Usa proxies do Apify para evitar bloqueio (essencial para OLX)
-    // Se estiver rodando local sem conta paga, pode comentar a linha abaixo, mas no servidor precisa.
-    proxyConfiguration: await Actor.createProxyConfiguration({ groups: ['RESIDENTIAL'] }), 
+    proxyConfiguration,
     
     requestHandler: async ({ page, request, enqueueLinks, log }) => {
         log.info(`Processando: ${request.url}`);
 
-        // --- CENÁRIO 1: PÁGINA DE LISTAGEM (Categoria) ---
+        // --- LISTAGEM ---
         if (request.label === 'LIST') {
-            // 1. Espera os anúncios carregarem
             await page.waitForSelector('[data-cy="l-card"]');
-
-            // 2. Enfileira os links de cada carro para serem visitados
             await enqueueLinks({
                 selector: '[data-cy="l-card"] a',
-                label: 'DETAIL', // Marca como página de detalhe
+                label: 'DETAIL',
             });
-
-            // 3. Tenta achar o botão de "Próxima Página" e enfileira
-            // O seletor do botão de próxima página varia, mas geralmente é algo assim:
             const nextButton = await page.$('[data-cy="pagination-forward"]');
             if (nextButton) {
                 await enqueueLinks({
@@ -35,36 +36,33 @@ const crawler = new PlaywrightCrawler({
             }
         } 
         
-        // --- CENÁRIO 2: PÁGINA DE DETALHE (O carro) ---
+        // --- DETALHE DO CARRO ---
         else if (request.label === 'DETAIL') {
-            // Espera o título carregar
             await page.waitForSelector('h1');
 
-            // --- TENTATIVA DE PEGAR O TELEFONE ---
             let telefone = 'Não disponível';
             try {
-                // Tenta clicar no botão de mostrar telefone (seletor sujeito a mudança)
-                // O seletor comum no OLX costuma ser data-testid ou classes específicas
-                const phoneBtn = await page.$('button[data-testid="show-phone"]');
+                // Tenta clicar no botão de mostrar telefone
+                const phoneBtn = await page.$('button[data-testid="show-phone"]'); // Ajustar seletor se necessário
                 if (phoneBtn) {
                     await phoneBtn.click();
-                    await page.waitForTimeout(1000); // Espera revelar
-                    // Pega o texto do botão ou do elemento que apareceu
-                    telefone = await page.textContent('button[data-testid="show-phone"]'); 
+                    await page.waitForTimeout(2000); 
+                    // Tenta pegar o texto que apareceu
+                    telefone = await page.evaluate(() => {
+                         // Procura o elemento que contem o telefone após o clique
+                         const el = document.querySelector('button[data-testid="show-phone"]');
+                         return el ? el.innerText : 'Erro ao ler';
+                    });
                 }
             } catch (e) {
-                log.warning(`Não foi possível pegar telefone de ${request.url}`);
+                log.warning(`Não foi possível pegar telefone: ${e.message}`);
             }
 
-            // --- EXTRAÇÃO DOS DADOS ---
             const dados = await page.evaluate(() => {
-                // Função auxiliar para pegar texto seguro
                 const getText = (sel) => document.querySelector(sel)?.innerText?.trim() || '';
-
-                // Pegar atributos (Ano, Km, etc ficam numa lista)
-                // O layout do OLX PT geralmente usa uma lista <ul> com <li>
-                // Vamos varrer essa lista para mapear chaves e valores
                 const attributes = {};
+                
+                // Pega os itens da lista de detalhes (Ano, Km, etc)
                 document.querySelectorAll('[data-testid="main-parameters"] li').forEach(li => {
                     const text = li.innerText;
                     if(text.includes('Ano')) attributes.ano = text.replace('Ano: ', '');
@@ -73,25 +71,25 @@ const crawler = new PlaywrightCrawler({
                 });
 
                 return {
-                    nome: getText('h1'), // Título do anúncio
-                    vendedor: getText('h4'), // Nome do vendedor (geralmente h4 no card de user)
+                    nome: getText('h1'),
                     descricao: getText('[data-cy="ad_description"] div'),
-                    cidade: getText('[data-testid="location-date"]')?.split('-')[0]?.trim(), // Pega só a cidade
+                    cidade: getText('[data-testid="location-date"]')?.split('-')[0]?.trim(),
                     preco: getText('[data-testid="ad-price-container"] h3'),
                     ...attributes
                 };
             });
 
-            // Salva no Dataset do Apify
             await Dataset.pushData({
                 url: request.url,
                 telefone,
-                particular: true, // Já filtramos na URL, então é true
+                particular: true,
                 ...dados
             });
         }
     },
 });
 
-// Começa a rodar
 await crawler.run(startUrls.map(url => ({ url, label: 'LIST' })));
+
+// Finaliza o Actor corretamente
+await Actor.exit();
