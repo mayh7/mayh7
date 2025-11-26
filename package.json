@@ -4,6 +4,7 @@
     "type": "module",
     "description": "Scraper para OLX Portugal",
     "dependencies": {
+        "apify": "^3.2.0",
         "crawlee": "^3.0.0",
         "playwright": "*"
     },
