@@ -1,0 +1,13 @@
+{
+    "name": "olx-scraper",
+    "version": "0.0.1",
+    "type": "module",
+    "description": "Scraper para OLX Portugal",
+    "dependencies": {
+        "crawlee": "^3.0.0",
+        "playwright": "*"
+    },
+    "scripts": {
+        "start": "node src/main.js"
+    }
+}
